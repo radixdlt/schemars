@@ -32,6 +32,8 @@ pub(crate) static SERDE_KEYWORDS: &[&str] = &[
 
 // If a struct/variant/field has any #[schemars] attributes, then create copies of them
 // as #[serde] attributes so that serde_derive_internals will parse them for us.
+// Additionally, this resolves some `serde_with` attributes allowing the crate to be partially
+// supported.
 pub fn process_serde_attrs(input: &mut syn::DeriveInput) -> Result<(), Vec<syn::Error>> {
     let ctxt = Ctxt::new();
     process_attrs(&ctxt, &mut input.attrs);
@@ -53,7 +55,53 @@ fn process_serde_variant_attrs<'a>(ctxt: &Ctxt, variants: impl Iterator<Item = &
 
 fn process_serde_field_attrs<'a>(ctxt: &Ctxt, fields: impl Iterator<Item = &'a mut Field>) {
     for f in fields {
+        process_serde_with_attributes(&ctxt, f);
         process_attrs(&ctxt, &mut f.attrs);
+    }
+}
+
+fn process_serde_with_attributes(ctxt: &Ctxt, field: &mut Field) {
+    // We only wish to operate on the `serde_as` attributes of this field. So, we filter for them.
+    // If none are found, then no processing is done to this field.
+    for attribute in field
+        .attrs
+        .iter()
+        .filter(|attr| attr.path.is_ident("serde_as"))
+    {
+        // TODO: We need better parsing of the serde_as attribute. However, for the time-being, this
+        // will suffice for the partial support as I'm not too familiar with how syn and proc macros
+        // work.
+        // TODO: This code that you see here is very in-ideal as all it uses are strings. This
+        // should be refactored into proper syn.
+        let serde_as_inner_string = attribute
+            .tokens
+            .to_string()
+            .split('"')
+            .nth(1)
+            .expect("Failed to get inner serde_as")
+            .to_owned();
+        if serde_as_inner_string.contains("DisplayFromStr") || serde_as_inner_string.contains("Hex")
+        {
+            field.ty = syn::Type::Path(syn::parse_str("::std::string::String").unwrap())
+        } else if serde_as_inner_string.contains("FromInto") {
+            field.ty = syn::Type::Path(
+                syn::parse_str(
+                    serde_as_inner_string
+                        .split('<')
+                        .nth(1)
+                        .unwrap()
+                        .split('>')
+                        .next()
+                        .unwrap(),
+                )
+                .unwrap(),
+            );
+        } else {
+            panic!(
+                "Unsupported serde_with attribute: {}",
+                serde_as_inner_string
+            )
+        }
     }
 }
 
